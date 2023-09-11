@@ -1,0 +1,264 @@
+import pandas as pd
+import numpy as np
+import scipy.stats as stats
+import matplotlib.pyplot as plt
+import seaborn as sns
+import random
+import math
+import warnings
+
+# 1.1. Импортируем данные в окружение Jupyter Notebook
+ds = pd.read_excel('Новый диплом датасет.xlsx', sheet_name = 'Данные')
+ds_clients = pd.read_excel('Новый диплом датасет.xlsx', sheet_name = 'Clients')
+ds_r_dict = pd.read_excel('Новый диплом датасет.xlsx', sheet_name = 'Region_dict')
+
+# 1.2. Изучаем все три таблицы и проверяем их на наличие пустых значений
+ds.info()
+
+<class 'pandas.core.frame.DataFrame'>
+RangeIndex: 37989 entries, 0 to 37988
+Data columns (total 4 columns):
+ #   Column       Non-Null Count  Dtype  
+---  ------       --------------  -----  
+ 0   id_order     37989 non-null  int64  
+ 1   id_client    37401 non-null  float64
+ 2   amt_payment  35845 non-null  float64
+ 3   dtime_pay    35828 non-null  object 
+dtypes: float64(2), int64(1), object(1)
+memory usage: 1.2+ MB
+
+# 1.3. Исключаем из таблиц все строки, в которых есть нулловые значения
+
+ds = ds.dropna()
+#Мы удаляем все строки, в которых есть нулловые значения через метод .dropna.
+#Мы не используем замену нуллов на другие значения, потому что это не целесообразно исходя из того, какие у нас имеются данные.
+#Если мы заменим нуллы на нули в колонке amt_payment, то это повлияет на avg.
+#При этом, если мы удалим все нуллы, погрешность составит 0.05%, что допустимо.
+
+ds_clients = ds_clients.dropna()
+
+ds['id_client'] = ds['id_client'].astype('int64')
+
+# 1.4. Исследуем количество торговых точек в каждом городе - построим группировку по количеству в каждом городе и визуализируем с помощью гистограммы.
+ds_gr_city = ds_r_dict.groupby('city')['id_trading_point'].count().reset_index().sort_values('id_trading_point',ascending=False)
+
+sns.set(rc={'figure.figsize':(10,4)})
+#sns.histplot(data=ds_r_dict, x='city')
+plt.bar(ds_gr_city['city'],ds_gr_city['id_trading_point'])
+plt.xticks(rotation=450)
+plt.title('Количество торговых точек в каждом городе')
+plt.show()
+
+# 2.1. Построим агрегацию таблицы с платежами, где вычислим сумму платежей на каждого клиента.
+ds_sum = ds.groupby('id_client')['amt_payment'].sum().reset_index().rename(columns={'amt_payment':'sum_payment'})
+
+# 2.2. Соединим (по клиенту) сгруппированную таблицу с платежами с клиентской таблицей.
+ds_sum_clients = pd.merge (ds_clients, ds_sum, on = 'id_client', how = 'left')
+
+# 2.3. Заполним нулями суммы покупок тех клиентов, которые их не совершали
+ds_sum_clients['sum_payment'] = ds_sum_clients['sum_payment'].fillna(0)
+
+# 2.4. С помощью словаря регионов подтянем к каждой торговой точке город, в котором она находится
+ds_all = pd.merge (ds_sum_clients, ds_r_dict, on = 'id_trading_point')
+
+# 2.5. Создадим поле флаг платежа, который принимает значения 0 или 1 в зависимости от того, заплатил клиент или нет
+ds_all['nflag_payment'] = np.where(ds_all['sum_payment'] == 0, 0, 1)
+
+# 3.1. Создадим функцию test_calc, которая будет вычислять значение t-критерия (критерия Стьюдента) и p_value для сравнения средних
+def test_calc(r1, r2, alpha=0.05):
+    s, p = stats.ttest_ind(r1, r2)
+    print('Среднее первого ряда = ', r1.mean())
+    print('Среднее второго ряда = ', r2.mean())
+    print()
+    print('t-statistic= ', s)
+    print('p-value = ', p, '\n')
+    if p < alpha:
+        print('Средние неравны!')
+    else:
+        print('Разницы между средними нету!')
+    return s,p
+
+# 3.2. Функция, которая будет рассчитывать значение критерия Манна-Уитни и p-value для сравнения распределений
+def mann_whitney_func(r1, r2, alpha=0.05):
+    s, p = stats.mannwhitneyu(r1, r2)
+    print('Среднее первого ряда = ', r1.mean())
+    print('Среднее второго ряда = ', r2.mean())
+    print()
+    print('t-statistic= ', s)
+    print('p-value = ', p, '\n')
+    if p < alpha:
+        print('Средние неравны!')
+    else:
+        print('Разницы между средними нету!')
+
+# 4.1. Создаем пустой список
+ds_lst = []
+ds_tp = ds_all.groupby('id_trading_point')['sum_payment'].sum().reset_index()
+
+ds_tp_1 = ds_all.groupby(['id_trading_point','nflag_test'])['sum_payment'].sum().reset_index()
+
+# 4.1. Добавляем к этому списку все торговые точки, в которых были обе группы, тестовая и контрольная
+ds_tp_1_gr = ds_tp_1.groupby('id_trading_point')['nflag_test'].count().reset_index()
+lst_gr = ds_tp_1_gr[ds_tp_1_gr['nflag_test']==1]['id_trading_point'].tolist()
+
+# 4.1. Добавляем к этому списку все торговые точки, в которых не было заплачено ни одного рубля ни одним клиентом
+lst = ds_tp_1[ds_tp_1['sum_payment'] == 0]['id_trading_point'].reset_index()
+ds_lst = lst['id_trading_point'].tolist()
+
+# 4.2. Проверяем данные на наличие пустых nflag_test и уникальные значения
+# 4.2. Они отсутствуют, поэтому цикл на проверку можно не запускать
+ds_all.info()
+ds_all['nflag_test'].unique()
+
+<class 'pandas.core.frame.DataFrame'>
+Int64Index: 46404 entries, 0 to 55355
+Data columns (total 7 columns):
+ #   Column            Non-Null Count  Dtype         
+---  ------            --------------  -----         
+ 0   id_client         46404 non-null  int64         
+ 1   dtime_ad          46404 non-null  datetime64[ns]
+ 2   nflag_test        46404 non-null  int64         
+ 3   id_trading_point  46404 non-null  int64         
+ 4   sum_payment       46404 non-null  float64       
+ 5   city              46404 non-null  object        
+ 6   nflag_payment     46404 non-null  int32         
+dtypes: datetime64[ns](1), float64(1), int32(1), int64(3), object(1)
+memory usage: 2.7+ MB
+array([0, 1], dtype=int64)
+
+# 5.1. Отбрасываем все торговые точки, которые были вами обнаружены в пункте 4
+
+ds_all = ds_all[~ds_all['id_trading_point'].isin(ds_lst+lst_gr)]
+
+test_payments = ds_all.loc[(ds_all['nflag_test'] == 1)&(ds_all['sum_payment']!=0)]['sum_payment']
+control_payments = ds_all.loc[(ds_all['nflag_test'] == 0)&(ds_all['sum_payment']!=0)]['sum_payment']
+
+# 5.2. Изображаем гистограмму платежей, на которой различными цветами изображены группы “тест” и “контроль”
+
+plt.hist([test_payments, control_payments], bins=100, color=["violet", "blue"], label=["тест", "контроль"], alpha=0.5)
+plt.title("Гистограмма платежей")
+plt.xlabel("Платеж")
+plt.ylabel("Количество")
+plt.legend()
+plt.show()
+
+# 5.3. Применяем функцию test_calc и делаем выводы (сравниваем средние платежи)
+
+test_calc (control_payments, test_payments)
+
+# Т.к. p-value меньше 5%, мы можем сделать выводы, что нулевая гипотеза о равенстве средних отвеграется
+# Тестовая группа была лучше, т.к. её показатели выше
+
+# 5.4. Применяем функцию test_calc и делаем выводы (сравниваем конверсию в платеж, то есть r1 и r2 - это ряды нулей и единиц, в зависимости от того, оплатил ли что-то клиент или нет)
+
+nflag_p_0 = ds_all.loc[ds_all['nflag_test'] == 0]['nflag_payment']
+nflag_p_1 = ds_all.loc[ds_all['nflag_test'] == 1]['nflag_payment']
+
+test_calc (nflag_p_0,nflag_p_1)
+
+# Т.к. p-value меньше 5%, мы можем сделать выводы, что нулевая гипотеза о равенстве средних отвеграется
+# Тестовая группа была лучше, т.к. её показатели выше
+
+# 5.5. Применяем функцию mann_whitney_func и делаем выводы
+
+mann_whitney_func(control_payments,test_payments)
+
+# Т.к. p-value меньше 5%, мы можем сделать выводы, что нулевая гипотеза о равенстве средних отвеграется
+# Тестовая группа была лучше, т.к. её показатели выше
+
+# 6.0 Запускаем цикл по всем городам
+
+for i in ds_all['city'].unique():
+    print('Город:', i)
+    test_calc(ds_all[(ds_all['city']==i)&(ds_all['nflag_test']==0)]['sum_payment']
+            , ds_all[(ds_all['city']==i)&(ds_all['nflag_test']==1)]['sum_payment'])
+    print()
+    print('________________________________','\n')
+
+# 6.1. Повторяем аналитику из пункта 5 в отношении Москвы. Делаем выводы.
+
+print('Москва:')
+test_calc(ds_all[(ds_all['city']=='Москва')&(ds_all['nflag_test']==0)]['sum_payment']
+        , ds_all[(ds_all['city']=='Москва')&(ds_all['nflag_test']==1)]['sum_payment'])
+
+# Т.к. p-value меньше 5%, мы можем сделать выводы, что нулевая гипотеза о равенстве средних отвеграется
+# Тестовая группа была лучше, т.к. её показатели выше
+
+# 6.2. Повторяем аналитику из пункта 5 в отношении Санкт-Петербурга. Делаем выводы.
+
+print('Санкт-Петербург:')
+test_calc(ds_all[(ds_all['city']=='Санкт-Петербург')&(ds_all['nflag_test']==0)]['sum_payment']
+        , ds_all[(ds_all['city']=='Санкт-Петербург')&(ds_all['nflag_test']==1)]['sum_payment'])
+
+# Т.к. p-value меньше 5%, мы можем сделать выводы, что нулевая гипотеза о равенстве средних отвеграется
+# Тестовая группа была лучше, т.к. её показатели выше
+
+# 6.3. Убираем из списка городов Москву и Санкт-Петербург
+
+unique_city = ds_all['city'].unique().tolist()
+unique_city.remove('Москва')
+unique_city.remove('Санкт-Петербург')
+
+# 6.3. Запускаем цикл по оставшимся городам. Проводим такой же анализ.
+
+for i in unique_city:
+    print('Город:', i)
+    test_calc(ds_all[(ds_all['city']==i)&(ds_all['nflag_test']==0)]['sum_payment']
+            , ds_all[(ds_all['city']==i)&(ds_all['nflag_test']==1)]['sum_payment'])
+    print()
+    print('________________________________','\n')
+
+df = pd.DataFrame()
+
+count_i = 0
+cnt_all = len(ds_all['city'])
+
+for i in ds_all['city'].unique():
+  # print(i)
+    df_loc = ds_all[ds_all['city'] == i]
+    for j in df_loc['id_trading_point'].unique():
+    # print(j)
+    # pass
+        count_i += 1
+        
+        test = ds_all[(ds_all['city']==i)&(ds_all['nflag_test']==1)&(ds_all['id_trading_point']==j)]['sum_payment']
+        control = ds_all[(ds_all['city']==i)&(ds_all['nflag_test']==0)&(ds_all['id_trading_point']==j)]['sum_payment']
+        
+        s,p = test_calc(test,control)
+        
+        
+        df = df.append({'count_i':count_i
+                    ,'city':i
+                    ,'id_trading_point':j
+                    ,'count_test':len(test)
+                    ,'count_control':len(control)
+                    ,'count_all':len(test)+len(control)
+                    ,'percent_count':(len(test)+len(control)) / cnt_all
+                    ,'avg_payment_test':np.mean(test)
+                    ,'avg_payment_control':np.mean(control)
+                    ,'diff':np.mean(test)-np.mean(control)
+                    ,'sigma_test':test.std()
+                    ,'sigma_control':control.std()
+                    ,'ttest':s
+                    ,'pvalue_ttest':p}
+                    ,ignore_index=True)
+        
+warnings.filterwarnings('ignore')
+
+# Если АВ-тест меньше 5% И разница больше 0 +
+# Если АВ-тест меньше 5% И разница меньше 0 -
+# ИНАЧЕ нет разницы
+
+df['flag'] = np.where((df['diff']>0)&(df['pvalue_ttest']<0.05), '+'
+            ,np.where((df['diff']<0)&(df['pvalue_ttest']<0.05), '-'
+            ,'='))
+df
+
+df1 = df[df['flag'] == '+']
+df2 = df[df['flag'] == '-']
+df3 = df[df['flag'] == '=']
+
+df1.to_excel('Диплом1.xlsx', sheet_name="Положительный исход")
+df2.to_excel('Диплом2.xlsx', sheet_name="Отрицательный исход")
+df3.to_excel('Диплом3.xlsx', sheet_name="Нейтральный исход")
+
